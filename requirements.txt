@@ -1,0 +1,8 @@
+langchain
+langchain-openai
+langchain-google-genai
+pydantic>=2.0
+python-dotenv
+unstructured[all-docs]
+pandas
+pytest

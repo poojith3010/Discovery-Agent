@@ -1,0 +1,14 @@
+From: sarah.marketing@aivar.com
+To: engineering-leads@aivar.com
+Subject: Re: CRM update and automations
+
+Hey team, 
+
+Just confirming that Marketing is still heavily relying on HubSpot for all our inbound marketing campaigns. We manage all our email subscribers and blog leads there. I assume we are logging in via the standard corporate SSO, but I'm not 100% sure on the exact auth protocol.
+
+Also, I know IT hates it, but a few of the interns set up a Zapier account to automate moving some leads around. They are just using a shared username and password right now.
+
+Can someone from engineering help us? We want an automation where if a new lead signs up in HubSpot, it checks something in AWS. 
+
+Thanks!
+Sarah

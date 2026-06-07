@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Environments (contains secret API keys)
+.env
+.env.*
+!.env.example
+
+# Pytest
+.pytest_cache/
+
+# Local pipeline outputs
+inventory_output.json
+gap_analysis_output.json
+generated_connectors/

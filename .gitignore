@@ -23,3 +23,6 @@ venv/
 inventory_output.json
 gap_analysis_output.json
 generated_connectors/
+
+# Scratch folder
+scratch/

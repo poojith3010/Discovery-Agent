@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import List
 from dotenv import load_dotenv
 from agent_l2 import run_gap_analysis
 
@@ -22,6 +23,19 @@ AUTOMATION_USE_CASES = [
     "When a procurement request is raised in Coupa, sync customer details to Salesforce.",
     "For team task updates on Trello, sync to Jira."
 ]
+
+def run_level_2_service(inventory_dict: dict, use_cases: List[str] = None) -> dict:
+    """
+    Service function for Level 2 gap analysis.
+    Accepts inventory dictionary and optionally custom use cases list.
+    Returns the gap analysis report as a Python dictionary.
+    """
+    logger.info("Running Level 2 Gap Analysis service...")
+    if use_cases is None:
+        use_cases = AUTOMATION_USE_CASES
+    
+    report = run_gap_analysis(inventory_dict, use_cases)
+    return report.model_dump()
 
 def main():
     logger.info("Initializing Level 2 Discovery Agent...")
@@ -45,9 +59,8 @@ def main():
             
         logger.info(f"Loaded {len(inventory_json.get('systems', []))} systems from inventory.")
 
-        # Run Level 2 gap analysis
-        logger.info("Executing use case mapping and integration gap analysis...")
-        report = run_gap_analysis(inventory_json, AUTOMATION_USE_CASES)
+        # Run Level 2 gap analysis service
+        report_dict = run_level_2_service(inventory_json)
         
         # Serialize to JSON and output
         output_file = "gap_analysis_output.json"
@@ -55,7 +68,6 @@ def main():
         
         logger.info(f"Writing Gap Analysis Report to {output_path}...")
         
-        report_dict = report.model_dump()
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(report_dict, f, indent=2, ensure_ascii=False)
             

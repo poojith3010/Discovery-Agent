@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import argparse
+from typing import List
 from dotenv import load_dotenv
 from unstructured.partition.auto import partition
 from agent import run_discovery_agent, validate_inventory
@@ -180,6 +181,51 @@ def deduplicate_inventory(raw_inventory: SystemInventory) -> SystemInventory:
 
     return SystemInventory(systems=deduplicated_systems)
 
+def run_level_1_service(document_texts: List[str], source_names: List[str] = None) -> dict:
+    """
+    Service function for Level 1 system discovery.
+    Accepts a list of document strings, runs systems extraction, deduplicates,
+    and returns a validated system inventory dictionary.
+    """
+    logger.info(f"Starting Level 1 Service with {len(document_texts)} documents.")
+    all_extracted_systems = []
+    
+    for idx, text in enumerate(document_texts):
+        if not text.strip():
+            continue
+        
+        doc_name = source_names[idx] if (source_names and idx < len(source_names)) else f"Doc {idx + 1}"
+        logger.info(f"Running discovery agent on document {idx + 1}/{len(document_texts)}: {doc_name}...")
+        
+        try:
+            document_inventory = run_discovery_agent(text)
+            for system in document_inventory.systems:
+                # Annotate source references
+                if not system.source_reference.strip():
+                    system.source_reference = f"Document: {doc_name}"
+                else:
+                    system.source_reference = f"[{doc_name}] {system.source_reference}"
+                all_extracted_systems.append(system)
+        except Exception as e:
+            logger.error(f"Error executing discovery on document '{doc_name}': {e}", exc_info=True)
+            raise e
+            
+        # Pause to respect API rate limits if there are more documents
+        if idx < len(document_texts) - 1:
+            logger.info("Pausing for 15 seconds to respect API rate limits...")
+            time.sleep(15)
+            
+    logger.info(f"Service aggregation complete. Discovered {len(all_extracted_systems)} systems total.")
+    master_inventory = SystemInventory(systems=all_extracted_systems)
+    
+    logger.info("Running robust deduplication on service systems inventory...")
+    deduplicated_inventory = deduplicate_inventory(master_inventory)
+    
+    logger.info("Running audit validation on service systems inventory...")
+    validated_inventory = validate_inventory(deduplicated_inventory)
+    
+    return validated_inventory.model_dump()
+
 def main():
     parser = argparse.ArgumentParser(description="Discovery Agent Ingestion Pipeline (Level 1)")
     parser.add_argument(
@@ -209,68 +255,37 @@ def main():
     # Ensure documents exist to read
     bootstrap_test_directory(args.input_dir)
 
-    all_extracted_systems = []
-    
     try:
         # Ingest files from the folder
         files = [f for f in os.listdir(args.input_dir) if os.path.isfile(os.path.join(args.input_dir, f))]
         logger.info(f"Ingesting documents from '{args.input_dir}'. Found {len(files)} file(s).")
 
+        document_texts = []
+        source_names = []
         for file_name in files:
             file_path = os.path.join(args.input_dir, file_name)
             logger.info(f"Parsing document: {file_path}")
             
             try:
-                # Use unstructured auto partition to extract text content
                 elements = partition(filename=file_path)
                 file_text = "\n".join([str(el) for el in elements])
-                
-                if not file_text.strip():
+                if file_text.strip():
+                    document_texts.append(file_text)
+                    source_names.append(file_name)
+                else:
                     logger.warning(f"File '{file_name}' contains no readable text. Skipping.")
-                    continue
-                
-                # Execute Level 1 systems discovery
-                logger.info(f"Running discovery agent on content from '{file_name}'...")
-                document_inventory = run_discovery_agent(file_text)
-                
-                # Annotate source document references
-                for system in document_inventory.systems:
-                    # Append the source document filename to the reference path
-                    if not system.source_reference.strip():
-                        system.source_reference = f"Document: {file_name}"
-                    else:
-                        system.source_reference = f"[{file_name}] {system.source_reference}"
-                    
-                    all_extracted_systems.append(system)
-                    
             except Exception as e:
-                logger.error(f"Error parsing or executing discovery on file '{file_name}': {e}", exc_info=True)
-                # Continue processing other files instead of crashing
+                logger.error(f"Error parsing file '{file_name}': {e}", exc_info=True)
                 continue
 
-            # Pause to respect API rate limits
-            logger.info("Pausing for 15 seconds to respect API rate limits...")
-            time.sleep(15)
-
-        # Aggregation
-        logger.info(f"Aggregation complete. Discovered {len(all_extracted_systems)} system extractions total.")
-        master_inventory = SystemInventory(systems=all_extracted_systems)
-
-        # Deduplicate system inventory before audit validation
-        logger.info("Running robust deduplication on master system inventory...")
-        deduplicated_inventory = deduplicate_inventory(master_inventory)
-        logger.info(f"Deduplication complete. Reduced {len(all_extracted_systems)} extractions to {len(deduplicated_inventory.systems)} unique systems.")
-
-        # Validate and audit master inventory
-        validated_inventory = validate_inventory(deduplicated_inventory)
+        # Run via service function
+        inventory_dict = run_level_1_service(document_texts, source_names)
         
         # Serialize to JSON and output
         output_filename = "inventory_output.json"
         output_path = os.path.join(os.path.dirname(__file__), output_filename)
         
         logger.info(f"Writing validated master system inventory to {output_path}...")
-        
-        inventory_dict = validated_inventory.model_dump()
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(inventory_dict, f, indent=2, ensure_ascii=False)
             

@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import List
 from dotenv import load_dotenv
 from agent_l3 import run_code_generation_agent
 
@@ -13,6 +14,32 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("main_l3")
+
+def run_level_3_service(gap_analysis_dict: dict) -> List[dict]:
+    """
+    Service function for Level 3 Code Generation.
+    Accepts the gap analysis dictionary, filters for missing integrations,
+    runs the code generation agent, and returns a list of dictionaries.
+    """
+    logger.info("Running Level 3 Code Generation service...")
+    gaps = gap_analysis_dict.get("prioritized_gaps", [])
+    missing_gaps = [g for g in gaps if g.get("status") == "Missing"]
+    
+    results = []
+    for idx, gap in enumerate(missing_gaps, 1):
+        src = gap.get("source_system")
+        dst = gap.get("destination_system")
+        note = gap.get("dependency_note", "")
+        
+        logger.info(f"--- Generating Connector [{idx}/{len(missing_gaps)}]: {src} -> {dst} ---")
+        integration_files = run_code_generation_agent(src, dst, note)
+        
+        files_dict = integration_files.model_dump()
+        files_dict["source_system"] = src
+        files_dict["destination_system"] = dst
+        results.append(files_dict)
+        
+    return results
 
 def main():
     logger.info("Initializing Level 3 Integration Code Generation Agent...")
@@ -34,12 +61,10 @@ def main():
         with open(gaps_path, "r", encoding="utf-8") as f:
             gaps_report = json.load(f)
 
-        gaps = gaps_report.get("prioritized_gaps", [])
-        missing_gaps = [g for g in gaps if g.get("status") == "Missing"]
+        # Run Level 3 service function
+        connector_results = run_level_3_service(gaps_report)
         
-        logger.info(f"Loaded {len(gaps)} total gaps. Identified {len(missing_gaps)} missing integration(s) to generate.")
-
-        if not missing_gaps:
+        if not connector_results:
             logger.info("No missing integrations found to process. Exiting.")
             return
 
@@ -48,15 +73,11 @@ def main():
         os.makedirs(base_output_dir, exist_ok=True)
         logger.info(f"Connector output target folder: {base_output_dir}")
 
-        for idx, gap in enumerate(missing_gaps, 1):
-            src = gap.get("source_system")
-            dst = gap.get("destination_system")
-            note = gap.get("dependency_note", "")
+        for idx, item in enumerate(connector_results, 1):
+            src = item.get("source_system")
+            dst = item.get("destination_system")
             
-            logger.info(f"--- Generating Connector [{idx}/{len(missing_gaps)}]: {src} -> {dst} ---")
-            
-            # Execute Level 3 agent code generation
-            integration_files = run_code_generation_agent(src, dst, note)
+            logger.info(f"--- Writing generated files for Connector [{idx}/{len(connector_results)}]: {src} -> {dst} ---")
             
             # Create a dedicated directory for this connector gap
             connector_folder_name = f"{src.lower()}_to_{dst.lower()}"
@@ -64,34 +85,34 @@ def main():
             os.makedirs(connector_dir, exist_ok=True)
             
             # Write Python connector file
-            py_filepath = os.path.join(connector_dir, integration_files.connector_filename)
+            py_filepath = os.path.join(connector_dir, item["connector_filename"])
             logger.info(f"Writing Python connector code to {py_filepath}...")
             with open(py_filepath, "w", encoding="utf-8") as f:
-                f.write(integration_files.connector_code)
+                f.write(item["connector_code"])
                 
             # Write Agent YAML file
-            yaml_filepath = os.path.join(connector_dir, integration_files.yaml_filename)
+            yaml_filepath = os.path.join(connector_dir, item["yaml_filename"])
             logger.info(f"Writing Agent YAML configuration to {yaml_filepath}...")
             with open(yaml_filepath, "w", encoding="utf-8") as f:
-                f.write(integration_files.yaml_content)
+                f.write(item["yaml_content"])
                 
             # Write README instruction file
             readme_filepath = os.path.join(connector_dir, "README.md")
             logger.info(f"Writing README installation guide to {readme_filepath}...")
             with open(readme_filepath, "w", encoding="utf-8") as f:
-                f.write(integration_files.readme_content)
+                f.write(item["readme_content"])
 
             # Write requirements.txt manifest
             req_filepath = os.path.join(connector_dir, "requirements.txt")
             logger.info(f"Writing dependency manifest to {req_filepath}...")
             with open(req_filepath, "w", encoding="utf-8") as f:
-                f.write(integration_files.requirements_content)
+                f.write(item["requirements_content"])
 
             # Write automated unit test file
-            test_filepath = os.path.join(connector_dir, integration_files.tests_filename)
+            test_filepath = os.path.join(connector_dir, item["tests_filename"])
             logger.info(f"Writing automated unit tests to {test_filepath}...")
             with open(test_filepath, "w", encoding="utf-8") as f:
-                f.write(integration_files.tests_code)
+                f.write(item["tests_code"])
 
             logger.info(f"Successfully generated files in directory: {connector_dir}")
 

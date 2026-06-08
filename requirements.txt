@@ -6,3 +6,4 @@ python-dotenv
 unstructured[all-docs]
 pandas
 pytest
+streamlit

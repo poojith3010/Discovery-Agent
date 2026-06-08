@@ -1,0 +1,33 @@
+
+# Aivar Innovations - Internal Systems Architecture Notes & Sprint Sync
+
+## 1. Customer Relationship Management (CRM)
+We use Salesforce to manage customer relations and tracking leads.
+- Authentication: Standard OAuth2 flow.
+- Key Entities: Customer, Lead, Account, Contact.
+- Business Processes: Lead-to-Cash, Sales pipeline management, Customer support routing.
+- Criticality: High (sales cannot operate without it).
+- Status: Active.
+
+## 2. ERP and Finance
+All billing and financial tracking are managed in NetSuite, which acts as our general ledger and financial source of truth.
+- Authentication: Token-Based Authentication (API Key).
+- Key Entities: Invoice, Ledger, Payment, Vendor.
+- Business Processes: Procure-to-Pay, Billing, Quarterly financial audits.
+- Criticality: High.
+
+## 3. Engineering & Bug Tracking
+Engineering files bugs and plans sprints in Jira. It is highly valued for project management.
+- Authentication: The docs do not explicitly state, but we probably use SAML SSO or individual user API keys.
+- Key Entities: Ticket, Sprint, Epics.
+- Business Processes: Software development lifecycle (SDLC) tracking.
+- Criticality: Medium.
+
+## 4. Messaging
+We sometimes route logs and automated alerts to a Slack channel.
+- Authentication: Webhook URL.
+- Criticality: Low.
+
+## 5. Miscellaneous Mentions
+- During the sync, Sarah asked: "Are we still evaluating Coupa for procurement, or do we already have an active sandbox account there?" Nobody was sure.
+- Dave mentioned that some teams might be using Trello for personal task boards, but it is not officially supported by IT.

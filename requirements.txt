@@ -7,3 +7,5 @@ unstructured[all-docs]
 pandas
 pytest
 streamlit
+typer
+rich

@@ -2,9 +2,10 @@ import os
 import time
 import json
 import logging
-import argparse
 from typing import List
 from dotenv import load_dotenv
+import typer
+from rich.logging import RichHandler
 from unstructured.partition.auto import partition
 from agent import run_discovery_agent, validate_inventory
 from schemas import SystemInventory, SystemExtraction
@@ -12,12 +13,15 @@ from schemas import SystemInventory, SystemExtraction
 # Load env variables from .env file
 load_dotenv()
 
-# Setup logging
+# Setup logging with RichHandler
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
 )
 logger = logging.getLogger("main")
+
 
 # Default mock document text used to bootstrap files if the directory is empty
 DEFAULT_MOCK_DOC = """
@@ -226,19 +230,13 @@ def run_level_1_service(document_texts: List[str], source_names: List[str] = Non
     
     return validated_inventory.model_dump()
 
-def main():
-    parser = argparse.ArgumentParser(description="Discovery Agent Ingestion Pipeline (Level 1)")
-    parser.add_argument(
-        "--input_dir",
-        type=str,
-        default="./test_documents",
-        help="Local directory path containing corporate documents to ingest."
-    )
-    args = parser.parse_args()
+# Import service functions from higher levels
+from main_l2 import run_level_2_service
+from main_l3 import run_level_3_service
 
-    logger.info("Initializing Level 1 Discovery Agent Ingestion Pipeline...")
-    
-    # Check/Generate .env file if missing
+app = typer.Typer(rich_markup_mode="rich", help="Aivar Discovery Agent - Architecture Intelligence Pipeline")
+
+def check_and_bootstrap_env(input_dir: str):
     openai_key = os.getenv("OPENAI_API_KEY")
     google_key = os.getenv("GOOGLE_API_KEY")
     if not (openai_key or google_key) or openai_key == "your_openai_api_key_here" or google_key == "your_google_api_key_here":
@@ -253,47 +251,311 @@ def main():
         logger.info("Proceeding in Local Mock Simulation Mode...")
 
     # Ensure documents exist to read
-    bootstrap_test_directory(args.input_dir)
+    bootstrap_test_directory(input_dir)
 
+def run_level_1_pipeline(input_dir: str) -> dict:
+    check_and_bootstrap_env(input_dir)
+    
+    # Ingest files from the folder
+    files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+    logger.info(f"Ingesting documents from '{input_dir}'. Found {len(files)} file(s).")
+
+    document_texts = []
+    source_names = []
+    for file_name in files:
+        file_path = os.path.join(input_dir, file_name)
+        logger.info(f"Parsing document: {file_path}")
+        
+        try:
+            elements = partition(filename=file_path)
+            file_text = "\n".join([str(el) for el in elements])
+            if file_text.strip():
+                document_texts.append(file_text)
+                source_names.append(file_name)
+            else:
+                logger.warning(f"File '{file_name}' contains no readable text. Skipping.")
+        except Exception as e:
+            logger.error(f"Error parsing file '{file_name}': {e}", exc_info=True)
+            continue
+
+    # Run via service function
+    inventory_dict = run_level_1_service(document_texts, source_names)
+    
+    # Serialize to JSON and output
+    output_filename = "inventory_output.json"
+    output_path = os.path.join(os.path.dirname(__file__), output_filename)
+    
+    logger.info(f"Writing validated master system inventory to {output_path}...")
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(inventory_dict, f, indent=2, ensure_ascii=False)
+        
+    logger.info("Discovery ingestion execution completed successfully!")
+    return inventory_dict
+
+def run_level_2_pipeline() -> dict:
+    inventory_file = "inventory_output.json"
+    inventory_path = os.path.join(os.path.dirname(__file__), inventory_file)
+    
+    if not os.path.exists(inventory_path):
+        logger.error(
+            f"Required Level 1 output file not found: {inventory_path}. "
+            "Please run Level 1 first."
+        )
+        raise typer.Exit(code=1)
+
+    logger.info(f"Loading system inventory from {inventory_path}...")
+    with open(inventory_path, "r", encoding="utf-8") as f:
+        inventory_json = json.load(f)
+        
+    logger.info(f"Loaded {len(inventory_json.get('systems', []))} systems from inventory.")
+
+    # Run Level 2 gap analysis service
+    report_dict = run_level_2_service(inventory_json)
+    
+    # Serialize to JSON and output
+    output_file = "gap_analysis_output.json"
+    output_path = os.path.join(os.path.dirname(__file__), output_file)
+    
+    logger.info(f"Writing Gap Analysis Report to {output_path}...")
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report_dict, f, indent=2, ensure_ascii=False)
+        
+    logger.info("Level 2 Gap Analysis completed successfully!")
+    return report_dict
+
+def run_level_3_pipeline() -> List[dict]:
+    gaps_file = "gap_analysis_output.json"
+    gaps_path = os.path.join(os.path.dirname(__file__), gaps_file)
+    
+    if not os.path.exists(gaps_path):
+        logger.error(
+            f"Required Level 2 output file not found: {gaps_path}. "
+            "Please run Level 2 first."
+        )
+        raise typer.Exit(code=1)
+
+    logger.info(f"Loading gap analysis report from {gaps_path}...")
+    with open(gaps_path, "r", encoding="utf-8") as f:
+        gaps_report = json.load(f)
+
+    # Run Level 3 service function
+    connector_results = run_level_3_service(gaps_report)
+    
+    if not connector_results:
+        logger.info("No missing integrations found to process. Exiting.")
+        return []
+
+    # Prepare output directory
+    base_output_dir = os.path.join(os.path.dirname(__file__), "generated_connectors")
+    os.makedirs(base_output_dir, exist_ok=True)
+    logger.info(f"Connector output target folder: {base_output_dir}")
+
+    for idx, item in enumerate(connector_results, 1):
+        src = item.get("source_system")
+        dst = item.get("destination_system")
+        
+        logger.info(f"--- Writing generated files for Connector [{idx}/{len(connector_results)}]: {src} -> {dst} ---")
+        
+        # Create a dedicated directory for this connector gap
+        connector_folder_name = f"{src.lower()}_to_{dst.lower()}"
+        connector_dir = os.path.join(base_output_dir, connector_folder_name)
+        os.makedirs(connector_dir, exist_ok=True)
+        
+        # Write Python connector file
+        py_filepath = os.path.join(connector_dir, item["connector_filename"])
+        logger.info(f"Writing Python connector code to {py_filepath}...")
+        with open(py_filepath, "w", encoding="utf-8") as f:
+            f.write(item["connector_code"])
+            
+        # Write Agent YAML file
+        yaml_filepath = os.path.join(connector_dir, item["yaml_filename"])
+        logger.info(f"Writing Agent YAML configuration to {yaml_filepath}...")
+        with open(yaml_filepath, "w", encoding="utf-8") as f:
+            f.write(item["yaml_content"])
+            
+        # Write README instruction file
+        readme_filepath = os.path.join(connector_dir, "README.md")
+        logger.info(f"Writing README installation guide to {readme_filepath}...")
+        with open(readme_filepath, "w", encoding="utf-8") as f:
+            f.write(item["readme_content"])
+
+        # Write requirements.txt manifest
+        req_filepath = os.path.join(connector_dir, "requirements.txt")
+        logger.info(f"Writing dependency manifest to {req_filepath}...")
+        with open(req_filepath, "w", encoding="utf-8") as f:
+            f.write(item["requirements_content"])
+
+        # Write automated unit test file
+        test_filepath = os.path.join(connector_dir, item["tests_filename"])
+        logger.info(f"Writing automated unit tests to {test_filepath}...")
+        with open(test_filepath, "w", encoding="utf-8") as f:
+            f.write(item["tests_code"])
+
+        logger.info(f"Successfully generated files in directory: {connector_dir}")
+
+    logger.info("Level 3 Integration Code Generation completed successfully!")
+    return connector_results
+
+@app.command()
+def level1(
+    input_dir: str = typer.Option(
+        "./test_documents",
+        "--input-dir",
+        help="Local directory path containing corporate documents to ingest."
+    )
+):
+    """
+    [bold green]Level 1: System Extraction & Ingestion[/bold green]
+
+    Runs the Level 1 extraction engine. It:
+    * Parses all documents in the specified [italic]--input-dir[/italic] folder.
+    * Detects enterprise systems using LLM-based discovery.
+    * Deduplicates and aggregates system properties.
+    * Saves the output systems inventory catalog to [yellow]inventory_output.json[/yellow].
+    """
     try:
-        # Ingest files from the folder
-        files = [f for f in os.listdir(args.input_dir) if os.path.isfile(os.path.join(args.input_dir, f))]
-        logger.info(f"Ingesting documents from '{args.input_dir}'. Found {len(files)} file(s).")
-
-        document_texts = []
-        source_names = []
-        for file_name in files:
-            file_path = os.path.join(args.input_dir, file_name)
-            logger.info(f"Parsing document: {file_path}")
-            
-            try:
-                elements = partition(filename=file_path)
-                file_text = "\n".join([str(el) for el in elements])
-                if file_text.strip():
-                    document_texts.append(file_text)
-                    source_names.append(file_name)
-                else:
-                    logger.warning(f"File '{file_name}' contains no readable text. Skipping.")
-            except Exception as e:
-                logger.error(f"Error parsing file '{file_name}': {e}", exc_info=True)
-                continue
-
-        # Run via service function
-        inventory_dict = run_level_1_service(document_texts, source_names)
+        inventory_dict = run_level_1_pipeline(input_dir)
         
-        # Serialize to JSON and output
-        output_filename = "inventory_output.json"
-        output_path = os.path.join(os.path.dirname(__file__), output_filename)
+        # Display Success Panel
+        from rich.console import Console
+        from rich.panel import Panel
+        console = Console()
+        output_path = os.path.abspath("inventory_output.json")
+        panel_content = (
+            f"[bold green]Level 1 Discovery Completed Successfully![/bold green]\n\n"
+            f"[bold]Output File Path:[/bold] {output_path}\n"
+            f"[bold]Systems Detected:[/bold] {len(inventory_dict.get('systems', []))}\n"
+        )
+        console.print(Panel(panel_content, title="[bold cyan]Level 1 Ingestion Status[/bold cyan]", border_style="cyan"))
+    except Exception as e:
+        logger.exception(f"Level 1 pipeline failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def level2():
+    """
+    [bold blue]Level 2: Enterprise Integration Gap Analysis[/bold blue]
+
+    Runs the Level 2 gap analyzer. It:
+    * Loads the system catalog from [yellow]inventory_output.json[/yellow].
+    * Evaluates mapping and integration gaps against predefined use cases.
+    * Runs risk, confidence, and complexity evaluations.
+    * Saves the gap analysis report to [yellow]gap_analysis_output.json[/yellow].
+    """
+    try:
+        report_dict = run_level_2_pipeline()
         
-        logger.info(f"Writing validated master system inventory to {output_path}...")
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(inventory_dict, f, indent=2, ensure_ascii=False)
+        # Display Success Panel
+        from rich.console import Console
+        from rich.panel import Panel
+        console = Console()
+        output_path = os.path.abspath("gap_analysis_output.json")
+        panel_content = (
+            f"[bold green]Level 2 Gap Analysis Completed Successfully![/bold green]\n\n"
+            f"[bold]Output File Path:[/bold] {output_path}\n"
+            f"[bold]Total Gaps Tracked:[/bold] {len(report_dict.get('prioritized_gaps', []))}\n"
+        )
+        console.print(Panel(panel_content, title="[bold blue]Level 2 Analysis Status[/bold blue]", border_style="blue"))
+    except Exception as e:
+        logger.exception(f"Level 2 pipeline failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def level3():
+    """
+    [bold magenta]Level 3: Autonomous Connector Synthesis[/bold magenta]
+
+    Runs the Level 3 synthesis engine. It:
+    * Loads the gap report from [yellow]gap_analysis_output.json[/yellow].
+    * Generates code files, tests, YAML configs, and docs for each missing link.
+    * Saves all generated connector packages inside the [yellow]generated_connectors/[/yellow] directory.
+    """
+    try:
+        connector_results = run_level_3_pipeline()
+        
+        from rich.console import Console
+        from rich.panel import Panel
+        console = Console()
+        
+        if not connector_results:
+            console.print(Panel("[bold green]Level 3 completed: No missing integrations to generate.[/bold green]", title="[bold magenta]Level 3 Synthesis Status[/bold magenta]", border_style="magenta"))
+            return
             
-        logger.info("Discovery ingestion execution completed successfully!")
+        base_output_dir = os.path.abspath("generated_connectors")
+        paths_list = []
+        for item in connector_results:
+            src = item.get("source_system", "").lower()
+            dst = item.get("destination_system", "").lower()
+            paths_list.append(f"  - [yellow]{os.path.join(base_output_dir, f'{src}_to_{dst}')}[/yellow]")
+        paths_str = "\n".join(paths_list)
+        
+        panel_content = (
+            f"[bold green]Level 3 Integration Code Generation Completed Successfully![/bold green]\n\n"
+            f"[bold]Output Target Folder:[/bold] {base_output_dir}\n"
+            f"[bold]Generated Connector Packages:[/bold]\n{paths_str}\n"
+        )
+        console.print(Panel(panel_content, title="[bold magenta]Level 3 Synthesis Status[/bold magenta]", border_style="magenta"))
+    except Exception as e:
+        logger.exception(f"Level 3 pipeline failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command(name="run-all")
+def run_all(
+    input_dir: str = typer.Option(
+        "./test_documents",
+        "--input-dir",
+        help="Local directory path containing corporate documents to ingest."
+    )
+):
+    """
+    [bold yellow]Complete Enterprise Pipeline Execution[/bold yellow]
+
+    Executes all three levels sequentially:
+    1. [bold green]Level 1[/bold green]: Ingests and extracts systems from --input-dir folder.
+    2. [bold blue]Level 2[/bold blue]: Compares catalog against automation use cases and performs gap/risk analysis.
+    3. [bold magenta]Level 3[/bold magenta]: Generates complete Python/YAML connector scaffolding packages.
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+    console = Console()
+    
+    console.print(Panel("[bold yellow]*** Initiating Full Discovery & Integration Pipeline ***[/bold yellow]", border_style="yellow"))
+    
+    try:
+        # Run Level 1
+        console.print("\n[bold cyan]>>> Running Level 1: System Extraction[/bold cyan]")
+        inventory_dict = run_level_1_pipeline(input_dir)
+        
+        # Run Level 2
+        console.print("\n[bold blue]>>> Running Level 2: Gap Analysis[/bold blue]")
+        report_dict = run_level_2_pipeline()
+        
+        # Run Level 3
+        console.print("\n[bold magenta]>>> Running Level 3: Code Synthesis[/bold magenta]")
+        connector_results = run_level_3_pipeline()
+        
+        # Combined Success Message
+        output_dir = os.path.abspath("generated_connectors")
+        paths_list = []
+        for item in connector_results:
+            src = item.get("source_system", "").lower()
+            dst = item.get("destination_system", "").lower()
+            paths_list.append(f"  - [yellow]{os.path.join(output_dir, f'{src}_to_{dst}')}[/yellow]")
+        paths_str = "\n".join(paths_list) if paths_list else "  - [italic]None[/italic]"
+        
+        panel_content = (
+            f"[bold green]Full Pipeline Run Completed Successfully![/bold green]\n\n"
+            f"[bold]Level 1 Output:[/bold] {os.path.abspath('inventory_output.json')} ({len(inventory_dict.get('systems', []))} systems detected)\n"
+            f"[bold]Level 2 Output:[/bold] {os.path.abspath('gap_analysis_output.json')} ({len(report_dict.get('prioritized_gaps', []))} gaps tracked)\n"
+            f"[bold]Level 3 Output Directory:[/bold] {output_dir}\n"
+            f"[bold]Generated Connector Packages:[/bold]\n{paths_str}\n"
+        )
+        console.print(Panel(panel_content, title="[bold yellow]Pipeline Execution Status[/bold yellow]", border_style="yellow"))
         
     except Exception as e:
-        logger.exception(f"An error occurred during discovery execution: {e}")
-        raise
+        logger.exception(f"Pipeline execution encountered an error: {e}")
+        raise typer.Exit(code=1)
 
 if __name__ == "__main__":
-    main()
+    app()
+
